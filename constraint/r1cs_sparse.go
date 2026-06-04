@@ -28,17 +28,19 @@ type SparseR1CIterator struct {
 // Next returns the next SparseR1C or nil if end. Caller must not store the result since the
 // same memory space is re-used for subsequent calls to Next.
 func (it *SparseR1CIterator) Next() *SparseR1C {
-	if it.n >= it.cs.GetNbInstructions() {
-		return nil
+	// Loop (rather than recurse) over skipped non-SparseR1C instructions: the
+	// execution circuit has long contiguous runs of them (hints), and per-skip
+	// recursion overflows the goroutine stack on large circuits.
+	for it.n < it.cs.GetNbInstructions() {
+		inst := it.cs.Instructions[it.n]
+		it.n++
+		blueprint := it.cs.Blueprints[inst.BlueprintID]
+		if bc, ok := blueprint.(BlueprintSparseR1C); ok {
+			bc.DecompressSparseR1C(&it.SparseR1C, inst.Unpack(it.cs))
+			return &it.SparseR1C
+		}
 	}
-	inst := it.cs.Instructions[it.n]
-	it.n++
-	blueprint := it.cs.Blueprints[inst.BlueprintID]
-	if bc, ok := blueprint.(BlueprintSparseR1C); ok {
-		bc.DecompressSparseR1C(&it.SparseR1C, inst.Unpack(it.cs))
-		return &it.SparseR1C
-	}
-	return it.Next()
+	return nil
 }
 
 // func (system *SparseR1CSCore) CheckUnconstrainedWires() error {
