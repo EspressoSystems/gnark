@@ -1,6 +1,6 @@
 # GPU support for Plonk (ICICLE) — experiment plan
 
-Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 2 in progress (Phases 0–1 done)**
+Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **CHECKPOINT — DESIGN.md awaiting user sign-off (Phases 0–2 done)**
 
 ## Goal
 
@@ -100,3 +100,14 @@ post-design checkpoint.
   fits the 8 GB card; (6) prover has exactly 5 SetRandom sites and no injection point —
   the clone adds a deterministic-randomness hook for stage-wise CPU-vs-GPU testing.
   Phase 2 (3 biased designers → 3-lens judge panel → DESIGN.md synthesis) running.
+- 2026-06-11: **Phase 2 done — CHECKPOINT.** Judge panel (correctness/performance/
+  simplicity lenses): 2 of 3 picked **MSM-only for v1**; the performance judge's
+  preferred NTT increments are preserved verbatim in DESIGN.md Appendix A as a
+  data-gated follow-up (decided from Phase 6 numbers, not folded into v1).
+  DESIGN.md committed: 10+c G1 MSMs offloaded against a device-resident dual SRS
+  through a single gpuMsm chokepoint; zero InitDomain calls (structurally eliminates
+  the NTT silent-corruption class and the groth16 domain-singleton coexistence
+  hazard); prove.go cloned per curve with a deterministic-randomness seam and an
+  all-CPU clone-fidelity gate before any GPU wiring. Honest projection: ~1.9–2.1×
+  at 2^16 shrinking to ~1.45–1.5× at 2^22 (FFT stays on CPU; Amdahl ceiling 1.62×).
+  Awaiting user sign-off before Phase 3 (bn254 implementation).
