@@ -1,6 +1,6 @@
 # GPU support for Plonk (ICICLE) — experiment plan
 
-Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 1 in progress (Phase 0 done)**
+Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 2 in progress (Phases 0–1 done)**
 
 ## Goal
 
@@ -86,3 +86,17 @@ post-design checkpoint.
   LD_LIBRARY_PATH (only driver libs are exposed now) and missing `$ORIGIN` rpath on
   the per-curve CUDA backend libs (their dlopen failed silently → "operation not
   supported on device CUDA"). Phase 1 (subsystem-mapping workflow) running.
+- 2026-06-11: **Phase 1 done.** 13 agents (6 readers + critic + 6 gap-fillers) produced
+  `.phase1-map.json` (committed; full subsystem map with file:line evidence). Headline
+  findings: (1) measured CPU profile 2^16–2^22 — MSM 38–55% of prover time, FFT machinery
+  30–48%, pointwise constraint work only ~7%; (2) full computeNumerator offload is NOT
+  expressible in icicle-gnark v3.2.2 (no scalar broadcast / d2d copy / gather / batch
+  inversion) — MSM-first scope is quantitatively justified; (3) no interception seam in
+  gnark-crypto kzg → the GPU prover clones `backend/plonk/<curve>/prove.go` (groth16
+  precedent), unexported-symbol inventory mapped; (4) all five Plonk transform shapes
+  mapped to ICICLE NTT configs — note the groth16 KNR recipe does NOT apply (Plonk's
+  quotient needs natural order) and the coset generator is FrMultiplicativeGen, not
+  fft.Generator(2n); (5) VRAM budget worked: dual SRS at n=2^22 = 0.5–1.5 GiB per curve,
+  fits the 8 GB card; (6) prover has exactly 5 SetRandom sites and no injection point —
+  the clone adds a deterministic-randomness hook for stage-wise CPU-vs-GPU testing.
+  Phase 2 (3 biased designers → 3-lens judge panel → DESIGN.md synthesis) running.
