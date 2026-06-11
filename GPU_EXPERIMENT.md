@@ -1,6 +1,6 @@
 # GPU support for Plonk (ICICLE) — experiment plan
 
-Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 0 in progress**
+Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 1 in progress (Phase 0 done)**
 
 ## Goal
 
@@ -78,3 +78,11 @@ post-design checkpoint.
 
 - 2026-06-11: Plan approved (autonomy: pause after design doc; quality: working
   experiment; env: nix flake). This file committed. Phase 0 started.
+- 2026-06-11: **Phase 0 done.** `flake.nix` builds icicle-gnark v3.2.2 (4 curves,
+  CUDA 12.6 toolkit, sm_86) and provides the dev shell. Gate test green:
+  `nix develop --command go test -tags=icicle ./backend/accelerated/icicle/groth16/`
+  proves+verifies Groth16 on the RTX 3070 for all 4 curves. Two environment traps
+  fixed along the way, documented in flake.nix comments: host-glibc shadowing via
+  LD_LIBRARY_PATH (only driver libs are exposed now) and missing `$ORIGIN` rpath on
+  the per-curve CUDA backend libs (their dlopen failed silently → "operation not
+  supported on device CUDA"). Phase 1 (subsystem-mapping workflow) running.
