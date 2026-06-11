@@ -4,7 +4,6 @@ package groth16
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
@@ -18,57 +17,24 @@ import (
 	cs_bls12381 "github.com/consensys/gnark/constraint/bls12-381"
 	cs_bn254 "github.com/consensys/gnark/constraint/bn254"
 	cs_bw6761 "github.com/consensys/gnark/constraint/bw6-761"
-	"github.com/consensys/gnark/logger"
 
 	icicle_bls12377 "github.com/consensys/gnark/backend/accelerated/icicle/groth16/bls12-377"
 	icicle_bls12381 "github.com/consensys/gnark/backend/accelerated/icicle/groth16/bls12-381"
 	icicle_bn254 "github.com/consensys/gnark/backend/accelerated/icicle/groth16/bn254"
 	icicle_bw6761 "github.com/consensys/gnark/backend/accelerated/icicle/groth16/bw6-761"
 
-	icicle_runtime "github.com/ingonyama-zk/icicle-gnark/v3/wrappers/golang/runtime"
-
 	"github.com/consensys/gnark/backend/accelerated/icicle"
+	"github.com/consensys/gnark/backend/accelerated/icicle/internal/gpuinit"
 )
-
-var onceWarmUpDevice sync.Once
 
 // warmUpDevice performs one-time initialization of the ICICLE backend and warms up all available devices.
 // This function is called at the beginning of the Prove function to ensure that the devices are ready for use.
 // It is safe to call this function multiple times; the initialization will only occur once.
+//
+// The initialization is process-wide and shared with the other accelerated
+// proof systems (see [gpuinit.WarmUpOnce]).
 func warmUpDevice(config *icicle.Config) {
-	onceWarmUpDevice.Do(func() {
-		log := logger.Logger()
-		if config.BackendLibs != "" {
-			err := icicle_runtime.LoadBackend(config.BackendLibs, true)
-			if err != icicle_runtime.Success {
-				panic(fmt.Sprintf("custom ICICLE backend loading error: %s", err.AsString()))
-			}
-		} else {
-			err := icicle_runtime.LoadBackendFromEnvOrDefault()
-			if err != icicle_runtime.Success {
-				panic(fmt.Sprintf("default ICICLE backend loading error: %s", err.AsString()))
-			}
-		}
-		nbDev, err := icicle_runtime.GetDeviceCount()
-		if err != icicle_runtime.Success {
-			panic(fmt.Sprintf("ICICLE get device count error: %s", err.AsString()))
-		}
-		log.Debug().Int("nbDev", nbDev).Msg("ICICLE devices detected")
-		for id := 0; id < nbDev; id++ {
-			device := icicle_runtime.CreateDevice(config.Backend.String(), id)
-			log.Debug().Int32("id", device.Id).Str("type", device.GetDeviceType()).Msg("ICICLE device created")
-			icicle_runtime.RunOnDevice(&device, func(args ...any) {
-				stream, err := icicle_runtime.CreateStream()
-				if err != icicle_runtime.Success {
-					panic(fmt.Sprintf("ICICLE create stream error: %s", err.AsString()))
-				}
-				err = icicle_runtime.WarmUpDevice(stream)
-				if err != icicle_runtime.Success {
-					panic(fmt.Sprintf("ICICLE device warmup error: %s", err.AsString()))
-				}
-			})
-		}
-	})
+	gpuinit.WarmUpOnce(config)
 }
 
 // Prove generates the proof of knowledge of a r1cs with full witness (secret + public part).
