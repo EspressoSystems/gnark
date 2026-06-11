@@ -15,6 +15,10 @@ import (
 	cs_bn254 "github.com/consensys/gnark/constraint/bn254"
 	cs_bw6761 "github.com/consensys/gnark/constraint/bw6-761"
 
+	kzg_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/kzg"
+
+	icicle_bn254 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bn254"
+
 	"github.com/consensys/gnark/backend/accelerated/icicle"
 	"github.com/consensys/gnark/backend/accelerated/icicle/internal/gpuinit"
 )
@@ -51,9 +55,9 @@ func Prove(ccs constraint.ConstraintSystem, pk plonk.ProvingKey, fullWitness wit
 // contains device pointers for acceleration. To convert the key to a standard
 // PLONK proving key, use the serialization methods.
 func Setup(ccs constraint.ConstraintSystem, srs, srsLagrange kzg.SRS) (plonk.ProvingKey, plonk.VerifyingKey, error) {
-	switch ccs.(type) {
+	switch tccs := ccs.(type) {
 	case *cs_bn254.SparseR1CS:
-		panic("bn254 icicle plonk setup not yet wired — Phase 3 (P3.3)")
+		return icicle_bn254.Setup(tccs, *srs.(*kzg_bn254.SRS), *srsLagrange.(*kzg_bn254.SRS))
 	case *cs_bls12377.SparseR1CS:
 		panic("not yet implemented — Phase 4")
 	case *cs_bls12381.SparseR1CS:
@@ -72,7 +76,7 @@ func Setup(ccs constraint.ConstraintSystem, srs, srsLagrange kzg.SRS) (plonk.Pro
 func NewProvingKey(curveID ecc.ID) plonk.ProvingKey {
 	switch curveID {
 	case ecc.BN254:
-		panic("bn254 icicle plonk proving key not yet wired — Phase 3 (P3.3)")
+		return icicle_bn254.NewProvingKey()
 	case ecc.BLS12_377:
 		panic("not yet implemented — Phase 4")
 	case ecc.BLS12_381:
