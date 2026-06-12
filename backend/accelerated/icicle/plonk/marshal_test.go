@@ -16,10 +16,10 @@ import (
 	"github.com/consensys/gnark/test/unsafekzg"
 )
 
-// testCurves lists the curves wired into the ICICLE PLONK backend. Only
-// bn254 is active in Phase 3; bls12-377, bls12-381 and bw6-761 are added in
-// Phase 4.
-var testCurves = []ecc.ID{ecc.BN254}
+// testCurves lists the curves wired into the ICICLE PLONK backend. bn254
+// landed in Phase 3, bls12-377 in P4.1; bls12-381 and bw6-761 are added in
+// the remaining Phase 4 steps.
+var testCurves = []ecc.ID{ecc.BN254, ecc.BLS12_377}
 
 // circuit mirrors the groth16 ICICLE marshal-test circuit adapted to the
 // PLONK scs builder: two public inputs (>1, exercising the nbPublic window
