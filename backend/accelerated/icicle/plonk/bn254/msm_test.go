@@ -152,6 +152,28 @@ func TestGpuMsmParity(t *testing.T) {
 	})
 }
 
+// TestGpuMsmChunkedParity covers the >2^18 path: msmChunkedG1 splits the MSM
+// at the 2^18 chunk cap (getConfiguredMSMChunkCap), and the chunk sub-ranges
+// compose with the windowed base views the prover uses (deviceBases.Range
+// then per-chunk Range on the view). Exactly two cases to keep GPU runtime
+// sane: a full-prefix window one element past the cap (2 uneven chunks) and a
+// ~2^19 window at an interior start offset (2 full chunks, start≠0).
+func TestGpuMsmChunkedParity(t *testing.T) {
+	device := testDevice(t)
+
+	chunkCap := getConfiguredMSMChunkCap() // 1<<18
+	nbBases := 2*chunkCap + 9
+	hostBases := randomBases(t, nbBases)
+	devBases := loadBases(t, device, hostBases)
+
+	t.Run(fmt.Sprintf("rangeTo/size=%d", chunkCap+1), func(t *testing.T) {
+		assertMsmParity(t, device, hostBases, devBases, 0, chunkCap+1)
+	})
+	t.Run(fmt.Sprintf("range/start=9/size=%d", 2*chunkCap), func(t *testing.T) {
+		assertMsmParity(t, device, hostBases, devBases, 9, 2*chunkCap)
+	})
+}
+
 func TestGpuMsmForceCPU(t *testing.T) {
 	device := testDevice(t)
 	hostBases := randomBases(t, 512)

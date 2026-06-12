@@ -128,6 +128,110 @@ func TestSetupDevicePointersRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDeviceIdentityMismatch: once the SRS is resident on a device, ensuring
+// or acquiring it for a DIFFERENT device must fail with a descriptive error —
+// MSMs against slices allocated on another device would CheckDevice-panic or
+// worse. The check fires before any device call, so a phantom device id is
+// safe to use on a single-GPU box.
+func TestDeviceIdentityMismatch(t *testing.T) {
+	device := testDevice(t)
+	pk := setupTestPk(t)
+
+	if err := pk.setupDevicePointers(device); err != nil {
+		t.Fatalf("setupDevicePointers: %v", err)
+	}
+	defer pk.FreeGPUResources()
+
+	other := icicle_runtime.CreateDevice(device.GetDeviceType(), int(device.Id)+1)
+	if err := pk.setupDevicePointers(&other); err == nil {
+		t.Fatal("setupDevicePointers on a different device must error while the SRS is resident elsewhere")
+	}
+	if err := pk.acquireDeviceSRS(&other, false); err == nil {
+		t.Fatal("acquireDeviceSRS on a different device must error while the SRS is resident elsewhere")
+	}
+
+	// The recorded device keeps working.
+	if err := pk.setupDevicePointers(device); err != nil {
+		t.Fatalf("setupDevicePointers on the original device: %v", err)
+	}
+}
+
+// TestReadFromReleasesDeviceState: deserializing a new host SRS into the
+// wrapper must release any device-resident bases (they were uploaded from the
+// PREVIOUS host SRS — keeping them would silently produce invalid proofs),
+// and must refuse to run while a Prove holds a reference.
+func TestReadFromReleasesDeviceState(t *testing.T) {
+	device := testDevice(t)
+	pk := setupTestPk(t)
+
+	var buf bytes.Buffer
+	if _, err := pk.WriteTo(&buf); err != nil {
+		t.Fatalf("pk WriteTo: %v", err)
+	}
+	stream := buf.Bytes()
+
+	// ReadFrom releases the stale device SRS.
+	if err := pk.setupDevicePointers(device); err != nil {
+		t.Fatalf("setupDevicePointers: %v", err)
+	}
+	if _, err := pk.ReadFrom(bytes.NewReader(stream)); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+	if pk.deviceInfo != nil {
+		t.Fatal("ReadFrom must release the device-resident SRS")
+	}
+
+	// UnsafeReadFrom too.
+	if err := pk.setupDevicePointers(device); err != nil {
+		t.Fatalf("setupDevicePointers: %v", err)
+	}
+	if _, err := pk.UnsafeReadFrom(bytes.NewReader(stream)); err != nil {
+		t.Fatalf("UnsafeReadFrom: %v", err)
+	}
+	if pk.deviceInfo != nil {
+		t.Fatal("UnsafeReadFrom must release the device-resident SRS")
+	}
+
+	// With an in-flight Prove reference, deserialization is a usage error and
+	// must fail without touching the stream or the device state.
+	if err := pk.acquireDeviceSRS(device, false); err != nil {
+		t.Fatalf("acquireDeviceSRS: %v", err)
+	}
+	if _, err := pk.ReadFrom(bytes.NewReader(stream)); err == nil {
+		t.Fatal("ReadFrom with an in-flight reference must error")
+	}
+	if _, err := pk.UnsafeReadFrom(bytes.NewReader(stream)); err == nil {
+		t.Fatal("UnsafeReadFrom with an in-flight reference must error")
+	}
+	if pk.deviceInfo == nil {
+		t.Fatal("failed deserialization must not free the in-use device SRS")
+	}
+	pk.releaseDeviceSRS() // last unpinned release frees
+	if pk.deviceInfo != nil {
+		t.Fatal("last unpinned release must free the device SRS")
+	}
+}
+
+// TestFreeGPUResourcesPendingWhileInFlight: FreeGPUResources called while a
+// reference is held marks pending-free and returns; the LAST release performs
+// the actual free even when the key is pinned.
+func TestFreeGPUResourcesPendingWhileInFlight(t *testing.T) {
+	device := testDevice(t)
+	pk := setupTestPk(t)
+
+	if err := pk.acquireDeviceSRS(device, true); err != nil { // pinned
+		t.Fatalf("acquireDeviceSRS: %v", err)
+	}
+	pk.FreeGPUResources() // refs>0: deferred
+	if pk.deviceInfo == nil {
+		t.Fatal("FreeGPUResources with refs>0 must defer the free, not perform it")
+	}
+	pk.releaseDeviceSRS()
+	if pk.deviceInfo != nil {
+		t.Fatal("the last release must honor the pending free, pinned or not")
+	}
+}
+
 func TestSetupDevicePointersNoLeak(t *testing.T) {
 	device := testDevice(t)
 	pk := setupTestPk(t)

@@ -10,9 +10,13 @@ import (
 // ONLY way to override the randFr / onStageCheckpoint package variables —
 // the production API does not expose them.
 //
-// The seams are package-level, so overriding them while another Prove runs in
-// the same process is racy; tests must not prove concurrently with a seam
-// override in place (the GPU test suite runs sequentially anyway, see doc.go).
+// The seams are package-level, so WRITING them (override or restore) while a
+// Prove is in flight is racy and forbidden. Installing a seam before any
+// Prove starts and restoring it after every Prove has returned is safe — the
+// goroutine start/join edges order the writes — and the installed hook may
+// then serve concurrent Proves, provided it is itself safe for concurrent
+// use (the concurrency gate in prove_test.go does exactly this; the GPU test
+// suite otherwise runs sequentially, see doc.go).
 
 // SetRandFr replaces the randomness seam with f and returns a function that
 // restores the previous seam. Passing nil restores the default

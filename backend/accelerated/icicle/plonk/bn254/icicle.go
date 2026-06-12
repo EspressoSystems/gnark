@@ -88,10 +88,17 @@ func g1ProjectiveToG1Jac(p icicle_bn254.Projective) curve.G1Jac {
 // loadG1 loads a G1 vector from host to device with Montgomery→Standard conversion.
 // Used for: Kzg and KzgLagrange SRS vectors (MSM config has AreBasesMontgomeryForm=false).
 // The conversion happens on device only — the host slice is never written to.
-// lifted from groth16/bn254/icicle.go (loadG1)
+// lifted from groth16/bn254/icicle.go (loadG1), with the allocation made
+// explicit: CopyToDevice(_, true) discards the Malloc status, so a VRAM OOM
+// would only surface as a CheckDevice panic inside the copy — Malloc first
+// and turn the failure into a Go error instead.
 func loadG1(hostSlice icicle_core.HostSlice[curve.G1Affine]) (icicle_core.DeviceSlice, error) {
 	var deviceSlice icicle_core.DeviceSlice
-	hostSlice.CopyToDevice(&deviceSlice, true)
+	if _, err := deviceSlice.Malloc(hostSlice.SizeOfElement(), hostSlice.Len()); err != icicle_runtime.Success {
+		return icicle_core.DeviceSlice{}, fmt.Errorf("device malloc for %d G1 points (%d bytes): %s",
+			hostSlice.Len(), hostSlice.Len()*hostSlice.SizeOfElement(), err.AsString())
+	}
+	hostSlice.CopyToDevice(&deviceSlice, false)
 	if err := icicle_bn254.AffineFromMontgomery(deviceSlice); err != icicle_runtime.Success {
 		deviceSlice.Free() // Free GPU memory before returning error
 		return icicle_core.DeviceSlice{}, fmt.Errorf("convert from Montgomery: %s", err.AsString())
@@ -553,9 +560,17 @@ func gpuMsm(device *icicle_runtime.Device, scalars []fr.Element, hostBases []cur
 		cfg.AreScalarsMontgomeryForm = true // raw Montgomery upload, no conversion kernel
 		cfg.AreBasesMontgomeryForm = false  // bases pre-converted at load (loadG1)
 
+		// explicit Malloc so a VRAM OOM surfaces as a Go error, not a later
+		// CheckDevice panic (CopyToDevice(_, true) discards the Malloc status)
+		hostScalars := (icicle_core.HostSlice[fr.Element])(scalars)
 		var scalarsDevice icicle_core.DeviceSlice
-		(icicle_core.HostSlice[fr.Element])(scalars).CopyToDevice(&scalarsDevice, true)
+		if _, mallocErr := scalarsDevice.Malloc(hostScalars.SizeOfElement(), hostScalars.Len()); mallocErr != icicle_runtime.Success {
+			msmErr = fmt.Errorf("gpu msm (size %d): scalar buffer malloc (%d bytes): %s",
+				n, hostScalars.Len()*hostScalars.SizeOfElement(), mallocErr.AsString())
+			return
+		}
 		defer scalarsDevice.Free()
+		hostScalars.CopyToDevice(&scalarsDevice, false)
 
 		window := deviceBases.Range(start, end, false)
 		jac, chunks, err := msmChunkedG1(scalarsDevice, window, cfg)

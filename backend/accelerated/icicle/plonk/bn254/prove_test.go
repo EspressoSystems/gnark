@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -401,6 +402,112 @@ func TestProveGPUvsForcedCPUStatisticalZK(t *testing.T) {
 // panic in any Range call).
 func TestProveGPUvsForcedCPUTiny(t *testing.T) {
 	runSeededGPUvsForcedCPU(t, &tinyCircuit{}, &tinyCircuit{X: 3, Y: 9}, "p3.7-tiny")
+}
+
+// ----------------------------------------------------------------------------
+// Concurrency gates (DESIGN.md §11.6): two concurrent Proves on ONE proving
+// key. Exercises the refcounted device-SRS lifetime (provingkey.go): both
+// Proves acquire the device SRS before either releases, so the first to
+// finish must NOT free it under the other one.
+// ----------------------------------------------------------------------------
+
+// concurrentProvePair runs two Proves on one shared *ProvingKey at the same
+// time (pinFlags[i] is each call's opts.PinToGPU) and verifies both proofs
+// with the unmodified native verifier. A barrier on the "bp-bl" checkpoint —
+// the first errgroup stage, fired exactly once per Prove with no GPU
+// dependency — guarantees the Proves overlap: neither proceeds until both
+// have acquired the device SRS. It returns the refcount observed at the
+// barrier (must be 2 — proves the refcount path, not a lucky serialization).
+func concurrentProvePair(t *testing.T, spr *cs.SparseR1CS, pk *ProvingKey, vk *plonk_bn254.VerifyingKey, w witness.Witness, pubW fr.Vector, pinFlags [2]bool) int {
+	t.Helper()
+
+	var barrier sync.WaitGroup
+	barrier.Add(2)
+	var barrierRefs int32
+	restore := SetOnStageCheckpoint(func(stage string, data []fr.Element) {
+		if stage != "bp-bl" {
+			return
+		}
+		barrier.Done()
+		barrier.Wait() // both Proves in flight before either proceeds
+		pk.setupMu.Lock()
+		if pk.deviceInfo != nil && int32(pk.deviceInfo.refs) > atomic.LoadInt32(&barrierRefs) {
+			atomic.StoreInt32(&barrierRefs, int32(pk.deviceInfo.refs))
+		}
+		pk.setupMu.Unlock()
+	})
+	defer restore()
+
+	var wg sync.WaitGroup
+	var proofs [2]*plonk_bn254.Proof
+	var errs [2]error
+	for i := 0; i < 2; i++ {
+		cfg, err := icicle.NewConfig(icicle.WithPinKeysToGPU(pinFlags[i]))
+		if err != nil {
+			t.Fatalf("config: %v", err)
+		}
+		wg.Add(1)
+		go func(i int, cfg *icicle.Config) {
+			defer wg.Done()
+			proofs[i], errs[i] = Prove(spr, pk, w, cfg)
+		}(i, cfg)
+	}
+	wg.Wait()
+
+	for i := 0; i < 2; i++ {
+		if errs[i] != nil {
+			t.Fatalf("concurrent prove %d: %v", i, errs[i])
+		}
+		if err := plonk_bn254.Verify(proofs[i], vk, pubW); err != nil {
+			t.Fatalf("native verify rejected concurrent proof %d: %v", i, err)
+		}
+	}
+	return int(atomic.LoadInt32(&barrierRefs))
+}
+
+// deviceSRSResident reports whether pk currently holds a device-resident SRS.
+func deviceSRSResident(pk *ProvingKey) bool {
+	pk.setupMu.Lock()
+	defer pk.setupMu.Unlock()
+	return pk.deviceInfo != nil
+}
+
+// TestConcurrentProvesSharedPk: two concurrent unpinned Proves on one pk —
+// the in-flight references must keep the device SRS alive until the LAST
+// Prove releases it, and then it must be freed. Run under -race this also
+// gates the unsynchronized pin-state write the pre-refcount code had.
+func TestConcurrentProvesSharedPk(t *testing.T) {
+	spr, pk, vk := compileSetup(t, &midSizeCircuit{})
+	w, pubW := witnessFor(t, midSizeAssignment())
+
+	refs := concurrentProvePair(t, spr, pk, vk, w, pubW, [2]bool{false, false})
+	if refs != 2 {
+		t.Fatalf("refcount path not exercised: %d refs at the barrier, want 2", refs)
+	}
+	if deviceSRSResident(pk) {
+		t.Fatal("device SRS must be freed once the last unpinned Prove releases")
+	}
+}
+
+// TestConcurrentProvesSharedPkPinned: pinned + unpinned concurrent Proves on
+// one pk — the pin promotion is set-once, so the SRS must survive both
+// releases; an explicit FreeGPUResources afterwards (no Prove in flight)
+// must free it immediately.
+func TestConcurrentProvesSharedPkPinned(t *testing.T) {
+	spr, pk, vk := compileSetup(t, &midSizeCircuit{})
+	w, pubW := witnessFor(t, midSizeAssignment())
+
+	refs := concurrentProvePair(t, spr, pk, vk, w, pubW, [2]bool{true, false})
+	if refs != 2 {
+		t.Fatalf("refcount path not exercised: %d refs at the barrier, want 2", refs)
+	}
+	if !deviceSRSResident(pk) {
+		t.Fatal("pin promotion: device SRS must stay resident after both Proves")
+	}
+	pk.FreeGPUResources()
+	if deviceSRSResident(pk) {
+		t.Fatal("FreeGPUResources with no Prove in flight must free immediately")
+	}
 }
 
 // TestProveShadowCompareMidSize: §11.5 matrix (e) — ICICLE_PLONK_DEBUG_MSM=1

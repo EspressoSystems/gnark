@@ -182,22 +182,24 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 	start := time.Now()
 
 	// device setup: warm up the ICICLE backend (process-wide, idempotent),
-	// create the device handle and load the dual SRS to the device. The SRS
-	// upload completes synchronously BEFORE spr.Solve runs — the BSB22 hint
-	// fires GPU MSMs inside the solver (DESIGN.md §5 ordering invariant).
+	// create the device handle and acquire the device-resident dual SRS. The
+	// acquisition completes synchronously BEFORE spr.Solve runs — the BSB22
+	// hint fires GPU MSMs inside the solver (DESIGN.md §5 ordering
+	// invariant). The paired release drops this Prove's reference at exit;
+	// the device SRS is freed only by the LAST in-flight Prove on this pk and
+	// only when the key is not pinned (refcounted lifetime model,
+	// provingkey.go) — the release-at-exit is sound because no GPU work
+	// happens outside the errgroup tasks below (doc.go invariant 4).
 	// Individual GPU operations are serialized by the per-device mutex held
-	// inside each helper (setupDevicePointers, gpuMsm) — per-call granularity
+	// inside each helper (acquireDeviceSRS, gpuMsm) — per-call granularity
 	// per DESIGN.md §8, which is correct only because this package owns no
 	// NTT-domain state (see doc.go).
 	gpuinit.WarmUpOnce(opts)
-	pk.PinToGPU = opts.PinToGPU
 	device := icicle_runtime.CreateDevice(opts.Backend.String(), opts.DeviceID)
-	if err := pk.setupDevicePointers(&device); err != nil {
+	if err := pk.acquireDeviceSRS(&device, opts.PinToGPU); err != nil {
 		return nil, fmt.Errorf("setup device pointers: %w", err)
 	}
-	if !pk.PinToGPU {
-		defer pk.FreeGPUResources()
-	}
+	defer pk.releaseDeviceSRS()
 
 	// init instance
 	g, ctx := errgroup.WithContext(context.Background())
