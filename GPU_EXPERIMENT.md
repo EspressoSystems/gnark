@@ -132,3 +132,19 @@ post-design checkpoint.
   points), clone-fidelity gate exactly 25 hunks per curve, cross-package
   diff-of-diffs empty, full per-curve gate suites green incl. determinism oracles
   and -race. 4-curve marshal loop + mixed groth16→plonk→groth16 smoke green.
+- 2026-06-11: **Phase 6 harness built** (`backend/accelerated/icicle/plonk/bench_test.go`,
+  `//go:build icicle`): `BenchmarkPlonkProveCPU` (real upstream backend/plonk
+  prover) vs `BenchmarkPlonkProveGPU` (pinned steady-state: untimed warm-up prove
+  loads the backend and uploads+pins the dual SRS before ResetTimer;
+  FreeGPUResources after each timed leg keeps VRAM bounded) over the scaled
+  referenceCircuit with the X=1,Y=1 witness trick; lazy per-(curve,size) setup
+  cache (PLONK has no DummySetup) so any `-bench` regex pays only for selected
+  sizes; both legs verify one untimed proof; everything skipped under `-short`.
+  Matrix: bn254/bls12-377/bls12-381 at 2^16/18/20/22, bw6-761 at 2^16/18/20/21
+  (2^21 included — 385G disk free makes the SRS-cache objection void; 2^22
+  excluded for one-time SRS-gen/Setup wall time). Smoke gate green (bn254 2^16,
+  -benchtime=2x): CPU 0.594 s/op, GPU 0.545 s/op — sane, single setup, backend
+  loaded from nix store. NB the smoke GPU number is well below the §14 ~2×
+  projection at 2^16; to be measured properly by the full matrix under exclusive
+  GPU access (commands + ~1.5-3 h runtime and ~4.2 GiB SRS-cache disk estimates
+  in the bench_test.go header, incl. an ICICLE_STEP_PROFILE per-MSM pass).
