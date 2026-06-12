@@ -106,7 +106,9 @@
           for lib in libcuda.so.1 libnvidia-ptxjitcompiler.so.1 libnvidia-ml.so.1; do
             [ -e "/usr/lib/x86_64-linux-gnu/$lib" ] && ln -sf "/usr/lib/x86_64-linux-gnu/$lib" "$driver_dir/"
           done
-          export LD_LIBRARY_PATH="${icicle-gnark}/lib:$driver_dir''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # stdenv's libstdc++ — CGO_LDFLAGS adds -lstdc++ to every cgo link,
+          # including untagged builds, which otherwise fail at runtime
+          export LD_LIBRARY_PATH="${icicle-gnark}/lib:${pkgs.stdenv.cc.cc.lib}/lib:$driver_dir''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         '';
       };
     };
