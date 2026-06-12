@@ -16,9 +16,11 @@ import (
 	cs_bw6761 "github.com/consensys/gnark/constraint/bw6-761"
 
 	kzg_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/kzg"
+	kzg_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 	kzg_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/kzg"
 
 	icicle_bls12377 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bls12-377"
+	icicle_bls12381 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bls12-381"
 	icicle_bn254 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bn254"
 
 	"github.com/consensys/gnark/backend/accelerated/icicle"
@@ -42,7 +44,7 @@ func Prove(ccs constraint.ConstraintSystem, pk plonk.ProvingKey, fullWitness wit
 	case *cs_bls12377.SparseR1CS:
 		return icicle_bls12377.Prove(tccs, pk.(*icicle_bls12377.ProvingKey), fullWitness, config)
 	case *cs_bls12381.SparseR1CS:
-		panic("not yet implemented — Phase 4")
+		return icicle_bls12381.Prove(tccs, pk.(*icicle_bls12381.ProvingKey), fullWitness, config)
 	case *cs_bw6761.SparseR1CS:
 		panic("not yet implemented — Phase 4")
 	default:
@@ -63,7 +65,7 @@ func Setup(ccs constraint.ConstraintSystem, srs, srsLagrange kzg.SRS) (plonk.Pro
 	case *cs_bls12377.SparseR1CS:
 		return icicle_bls12377.Setup(tccs, *srs.(*kzg_bls12377.SRS), *srsLagrange.(*kzg_bls12377.SRS))
 	case *cs_bls12381.SparseR1CS:
-		panic("not yet implemented — Phase 4")
+		return icicle_bls12381.Setup(tccs, *srs.(*kzg_bls12381.SRS), *srsLagrange.(*kzg_bls12381.SRS))
 	case *cs_bw6761.SparseR1CS:
 		panic("not yet implemented — Phase 4")
 	default:
@@ -82,7 +84,7 @@ func NewProvingKey(curveID ecc.ID) plonk.ProvingKey {
 	case ecc.BLS12_377:
 		return icicle_bls12377.NewProvingKey()
 	case ecc.BLS12_381:
-		panic("not yet implemented — Phase 4")
+		return icicle_bls12381.NewProvingKey()
 	case ecc.BW6_761:
 		panic("not yet implemented — Phase 4")
 	default:
