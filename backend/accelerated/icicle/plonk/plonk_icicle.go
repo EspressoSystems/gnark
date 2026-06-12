@@ -18,10 +18,12 @@ import (
 	kzg_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/kzg"
 	kzg_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 	kzg_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/kzg"
+	kzg_bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/kzg"
 
 	icicle_bls12377 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bls12-377"
 	icicle_bls12381 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bls12-381"
 	icicle_bn254 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bn254"
+	icicle_bw6761 "github.com/consensys/gnark/backend/accelerated/icicle/plonk/bw6-761"
 
 	"github.com/consensys/gnark/backend/accelerated/icicle"
 	"github.com/consensys/gnark/backend/accelerated/icicle/internal/gpuinit"
@@ -46,7 +48,7 @@ func Prove(ccs constraint.ConstraintSystem, pk plonk.ProvingKey, fullWitness wit
 	case *cs_bls12381.SparseR1CS:
 		return icicle_bls12381.Prove(tccs, pk.(*icicle_bls12381.ProvingKey), fullWitness, config)
 	case *cs_bw6761.SparseR1CS:
-		panic("not yet implemented — Phase 4")
+		return icicle_bw6761.Prove(tccs, pk.(*icicle_bw6761.ProvingKey), fullWitness, config)
 	default:
 		panic("icicle backend requested but constraint system is not of a supported curve")
 	}
@@ -67,7 +69,7 @@ func Setup(ccs constraint.ConstraintSystem, srs, srsLagrange kzg.SRS) (plonk.Pro
 	case *cs_bls12381.SparseR1CS:
 		return icicle_bls12381.Setup(tccs, *srs.(*kzg_bls12381.SRS), *srsLagrange.(*kzg_bls12381.SRS))
 	case *cs_bw6761.SparseR1CS:
-		panic("not yet implemented — Phase 4")
+		return icicle_bw6761.Setup(tccs, *srs.(*kzg_bw6761.SRS), *srsLagrange.(*kzg_bw6761.SRS))
 	default:
 		panic("icicle backend requested but constraint system is not of a supported curve")
 	}
@@ -86,7 +88,7 @@ func NewProvingKey(curveID ecc.ID) plonk.ProvingKey {
 	case ecc.BLS12_381:
 		return icicle_bls12381.NewProvingKey()
 	case ecc.BW6_761:
-		panic("not yet implemented — Phase 4")
+		return icicle_bw6761.NewProvingKey()
 	default:
 		panic("icicle backend requested but curve is not supported")
 	}

@@ -17,9 +17,8 @@ import (
 )
 
 // testCurves lists the curves wired into the ICICLE PLONK backend. bn254
-// landed in Phase 3, bls12-377 in P4.1, bls12-381 in P4.2; bw6-761 is added
-// in the remaining Phase 4 steps.
-var testCurves = []ecc.ID{ecc.BN254, ecc.BLS12_377, ecc.BLS12_381}
+// landed in Phase 3, bls12-377 in P4.1, bls12-381 in P4.2, bw6-761 in P4.3.
+var testCurves = []ecc.ID{ecc.BN254, ecc.BLS12_377, ecc.BLS12_381, ecc.BW6_761}
 
 // circuit mirrors the groth16 ICICLE marshal-test circuit adapted to the
 // PLONK scs builder: two public inputs (>1, exercising the nbPublic window
