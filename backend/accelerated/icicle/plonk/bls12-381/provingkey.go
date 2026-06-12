@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 	"unsafe"
 
 	curve "github.com/consensys/gnark-crypto/ecc/bls12-381"
@@ -32,7 +33,10 @@ import (
 //   - FreeGPUResources while Proves are in flight marks pendingFree: the last
 //     release then frees, pinned or not;
 //   - the recorded device is the only device the SRS is resident on: an
-//     acquire targeting a different device errors (no multi-device residency).
+//     acquire targeting a different device errors (no multi-device residency);
+//   - ReadFrom/UnsafeReadFrom hold setupMu across the ENTIRE deserialization:
+//     stale device state is freed first (error if refs > 0) and concurrent
+//     acquires block until the fresh host SRS is fully in place.
 type deviceInfo struct {
 	G1Device struct {
 		Kzg         icicle_core.DeviceSlice // pk.Kzg.G1, n+3 canonical points, standard form
@@ -93,31 +97,44 @@ func Setup(spr *cs.SparseR1CS, srs, srsLagrange kzg.SRS) (*ProvingKey, *plonk_bl
 // invalid proofs — so the device state is released first. Deserializing while
 // a Prove is in flight on this key is a usage error and fails without reading
 // from r.
+//
+// setupMu is held across the ENTIRE deserialization — release of the stale
+// device state AND the native ReadFrom — never released in between: a Prove
+// entering acquireDeviceSRS in such a window could data-race its host-SRS
+// reads against the stream writes, or upload the OLD host SRS and silently
+// serve every future proof from stale bases. Concurrent acquires instead
+// block until the fresh host SRS is fully in place, then load it. This is
+// deadlock-safe: the native ReadFrom takes no ICICLE locks, preserving the
+// setupMu→deviceMu lock order.
 func (pk *ProvingKey) ReadFrom(r io.Reader) (int64, error) {
-	if err := pk.releaseDeviceSRSForReload(); err != nil {
+	pk.setupMu.Lock()
+	defer pk.setupMu.Unlock()
+	if err := pk.releaseDeviceSRSForReloadLocked(); err != nil {
 		return 0, fmt.Errorf("icicle proving key: %w", err)
 	}
 	return pk.ProvingKey.ReadFrom(r)
 }
 
 // UnsafeReadFrom is [ProvingKey.ReadFrom] without subgroup checks; it releases
-// any device-resident SRS first for the same staleness reason. (ReadFrom and
-// UnsafeReadFrom are the only native deserializers that replace the G1
-// slices — the native plonk key has no ReadDump.)
+// any device-resident SRS first for the same staleness reason and holds
+// setupMu across the entire deserialization for the same atomicity reason.
+// (ReadFrom and UnsafeReadFrom are the only native deserializers that replace
+// the G1 slices — the native plonk key has no ReadDump.)
 func (pk *ProvingKey) UnsafeReadFrom(r io.Reader) (int64, error) {
-	if err := pk.releaseDeviceSRSForReload(); err != nil {
+	pk.setupMu.Lock()
+	defer pk.setupMu.Unlock()
+	if err := pk.releaseDeviceSRSForReloadLocked(); err != nil {
 		return 0, fmt.Errorf("icicle proving key: %w", err)
 	}
 	return pk.ProvingKey.UnsafeReadFrom(r)
 }
 
-// releaseDeviceSRSForReload frees the device-resident SRS ahead of a
+// releaseDeviceSRSForReloadLocked frees the device-resident SRS ahead of a
 // deserialization that replaces the host SRS. Errors when Proves are in
-// flight (the device bases are in use and cannot be safely replaced).
-func (pk *ProvingKey) releaseDeviceSRSForReload() error {
-	pk.setupMu.Lock()
-	defer pk.setupMu.Unlock()
-
+// flight (the device bases are in use and cannot be safely replaced). Caller
+// must hold setupMu — and must KEEP holding it until the new host SRS is
+// fully deserialized (see ReadFrom).
+func (pk *ProvingKey) releaseDeviceSRSForReloadLocked() error {
 	if pk.deviceInfo == nil {
 		return nil
 	}
@@ -206,12 +223,18 @@ func (pk *ProvingKey) ensureDeviceSRSLocked(device *icicle_runtime.Device) error
 		// Fail fast when the dual SRS clearly cannot fit in free VRAM — a
 		// blind upload would surface much later as an allocation panic inside
 		// a kernel call. Skipped when the backend cannot report memory (the
-		// MSM tuner degrades the same way).
+		// MSM tuner degrades the same way). The check is ADVISORY fail-fast,
+		// not a hard guarantee: free VRAM can dip transiently (async frees
+		// still settling), so on shortfall it re-samples once after a brief
+		// settle before erroring.
 		required := uint64(len(pk.Kzg.G1)+len(pk.KzgLagrange.G1)) * uint64(unsafe.Sizeof(curve.G1Affine{}))
 		if mem, memErr := icicle_runtime.GetAvailableMemory(); memErr == icicle_runtime.Success && mem != nil && uint64(mem.Free) < required {
-			loadErr = fmt.Errorf("insufficient device memory for the dual SRS: need %d bytes (%d+%d G1 points), %d bytes free on %s:%d",
-				required, len(pk.Kzg.G1), len(pk.KzgLagrange.G1), mem.Free, device.GetDeviceType(), device.Id)
-			return
+			time.Sleep(50 * time.Millisecond)
+			if mem, memErr = icicle_runtime.GetAvailableMemory(); memErr == icicle_runtime.Success && mem != nil && uint64(mem.Free) < required {
+				loadErr = fmt.Errorf("insufficient device memory for the dual SRS: need %d bytes (%d+%d G1 points), %d bytes free on %s:%d",
+					required, len(pk.Kzg.G1), len(pk.KzgLagrange.G1), mem.Free, device.GetDeviceType(), device.Id)
+				return
+			}
 		}
 
 		var err error

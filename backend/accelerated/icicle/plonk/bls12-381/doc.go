@@ -15,11 +15,14 @@
 //     tuners read free VRAM non-atomically. Sequential mixed use in one
 //     process (groth16 -> plonk -> groth16) is supported.
 //  3. Plonk-only concurrent Proves on one device are safe — including on one
-//     shared *ProvingKey: the device-resident SRS is reference-counted (one
-//     reference per in-flight Prove; freed by the last release unless the key
-//     is pinned, see provingkey.go) and individual GPU operations are
-//     serialized by the per-device mutex — subject to available VRAM for
-//     pinned SRS sets.
+//     shared *ProvingKey and ACROSS plonk curve packages (e.g. an inner-curve
+//     and an outer-curve Prove of one aggregation process): the
+//     device-resident SRS is reference-counted (one reference per in-flight
+//     Prove; freed by the last release unless the key is pinned, see
+//     provingkey.go) and individual GPU operations of ALL plonk curves are
+//     serialized by a process-wide per-device mutex shared via
+//     internal/devicemutex — subject to available VRAM for pinned SRS sets.
+//     groth16∥plonk on one device remains unsupported (point 2).
 //  4. INVARIANT — no GPU work outside the errgroup tasks of Prove: every GPU
 //     operation of a Prove call runs inside (or synchronously before) the
 //     errgroup tasks that Prove waits on. computeNumerator's detached restore

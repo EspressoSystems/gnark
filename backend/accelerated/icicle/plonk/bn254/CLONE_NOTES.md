@@ -158,7 +158,12 @@ size-≤3 MultiExps at lines 1391/1395), `correctionPoint.ScalarMultiplication`
    and both `setupDevicePointers` and `gpuMsm` acquire the mutex internally —
    a whole-Prove hold would deadlock the P3.6 MSM swaps. The §5 ordering
    invariant (device SRS resident before `spr.Solve`) is enforced by calling
-   `setupDevicePointers` synchronously before the errgroup starts.
+   `setupDevicePointers` synchronously before the errgroup starts. The mutex
+   itself is process-wide, NOT per-curve-package state: `getDeviceMutex`
+   delegates to the shared `internal/devicemutex` package, so concurrent
+   plonk Proves of DIFFERENT curves on one device (aggregation processes)
+   serialize per GPU operation too. groth16 keeps its own mutexes —
+   groth16∥plonk on one device remains unsupported (doc.go point 2).
 3. **Seams are package-level vars** (not instance fields as sketched in
    DESIGN.md §4): simpler export_test.go surface; overriding them while
    another Prove runs in-process is racy and forbidden for tests (the GPU
@@ -187,6 +192,28 @@ in-flight Prove; the last release frees unless pinned), device-identity check
 on every ensure/acquire (error on mismatch — no multi-device residency),
 set-once pin promotion (Prove never writes the public `PinToGPU` field),
 `FreeGPUResources` deferring to the last release via `pendingFree` when
-Proves are in flight, and `ReadFrom`/`UnsafeReadFrom` overrides that release
-stale device state (error when refs > 0) before delegating to the embedded
-native key.
+Proves are in flight, and `ReadFrom`/`UnsafeReadFrom` overrides that hold
+`setupMu` across the ENTIRE deserialization: release stale device state
+first (error when refs > 0, via `releaseDeviceSRSForReloadLocked`), then run
+the embedded native deserializer while STILL holding the lock — releasing it
+in between would let a concurrent acquire data-race the host-SRS slices
+against the stream writes or upload the old (stale) bases. Concurrent
+acquires block during a reload and then load the fresh SRS; the hold is
+deadlock-safe because the native deserializer takes no ICICLE locks
+(setupMu→deviceMu order preserved). The dual-SRS VRAM precheck in
+`ensureDeviceSRSLocked` is advisory fail-fast: on shortfall it re-samples
+free VRAM once after a 50ms settle before erroring (transient dips — e.g.
+async frees still settling — must not hard-fail a healthy box). The
+per-device GPU-operation mutex is NOT package state: `getDeviceMutex`
+delegates to the shared `internal/devicemutex` package (see decision 2
+above). The race coverage for the reload semantics lives in
+`TestReadFromAcquireRaceStress` (provingkey_test.go) and must be ported with
+the package.
+
+The cross-package no-drift gate: every curve package's ten `.go` files are
+byte-identical to bn254's modulo the identifier-substitution table
+(`ecc/bn254`→`ecc/<curve-dir>`, `plonk/bn254`→`plonk/<curve-dir>`,
+`constraint/bn254`→`constraint/<curve-dir>`, `groth16/bn254`→
+`groth16/<curve-dir>`, `curves/bn254`→`curves/<curve-pkg>`, remaining
+`bn254`→`<curve-pkg>`, `ecc.BN254`→`ecc.<CURVE_ID>`, remaining `BN254`→
+`<CURVE-DISPLAY>`, applied in that order).

@@ -4,6 +4,8 @@ package bls12381
 
 import (
 	"bytes"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -207,6 +209,70 @@ func TestReadFromReleasesDeviceState(t *testing.T) {
 		t.Fatal("failed deserialization must not free the in-use device SRS")
 	}
 	pk.releaseDeviceSRS() // last unpinned release frees
+	if pk.deviceInfo != nil {
+		t.Fatal("last unpinned release must free the device SRS")
+	}
+}
+
+// TestReadFromAcquireRaceStress: ReadFrom/UnsafeReadFrom hold setupMu across
+// the ENTIRE native deserialization, so a concurrent Prove-side acquire can
+// neither data-race its host-SRS reads against the stream writes nor upload
+// the OLD host SRS (which would then silently serve every future proof from
+// stale bases). One goroutine loops acquire/release; another loops ReadFrom
+// from a pre-serialized key. The in-flight usage-error path ("Prove call(s)
+// in flight") is an expected contention outcome and tolerated; any other
+// error fails the test. Run with -race: the assertion is freedom from data
+// races plus a consistent post-state.
+func TestReadFromAcquireRaceStress(t *testing.T) {
+	device := testDevice(t)
+	pk := setupTestPk(t)
+
+	var buf bytes.Buffer
+	if _, err := pk.WriteTo(&buf); err != nil {
+		t.Fatalf("pk WriteTo: %v", err)
+	}
+	stream := buf.Bytes()
+
+	const iters = 40
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			// Unpinned acquire/release cycle: upload + last-release free, the
+			// same window a small Prove exercises.
+			if err := pk.acquireDeviceSRS(device, false); err != nil {
+				t.Errorf("acquireDeviceSRS (iter %d): %v", i, err)
+				return
+			}
+			pk.releaseDeviceSRS()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			if _, err := pk.ReadFrom(bytes.NewReader(stream)); err != nil {
+				if strings.Contains(err.Error(), "in flight") {
+					continue // expected contention: a reference was held
+				}
+				t.Errorf("ReadFrom (iter %d): %v", i, err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	// Post-state consistency: no leaked references, and the key still
+	// completes a full acquire/release cycle against the reloaded host SRS.
+	pk.setupMu.Lock()
+	if pk.deviceInfo != nil && pk.deviceInfo.refs != 0 {
+		t.Errorf("leaked device-SRS references after stress: %d", pk.deviceInfo.refs)
+	}
+	pk.setupMu.Unlock()
+	if err := pk.acquireDeviceSRS(device, false); err != nil {
+		t.Fatalf("acquireDeviceSRS after stress: %v", err)
+	}
+	pk.releaseDeviceSRS()
 	if pk.deviceInfo != nil {
 		t.Fatal("last unpinned release must free the device SRS")
 	}

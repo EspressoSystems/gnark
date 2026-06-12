@@ -16,6 +16,7 @@ import (
 	curve "github.com/consensys/gnark-crypto/ecc/bls12-377"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fp"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	"github.com/consensys/gnark/backend/accelerated/icicle/internal/devicemutex"
 	"github.com/consensys/gnark/logger"
 
 	icicle_core "github.com/ingonyama-zk/icicle-gnark/v3/wrappers/golang/core"
@@ -26,15 +27,6 @@ import (
 
 var isProfileMode bool
 var isDebugMode bool
-
-// Per-curve package state, duplicated from the groth16 ICICLE backend
-// (DESIGN.md §8). The per-device mutex serializes ALL plonk GPU operations on
-// that device (SRS upload, every MSM). Per-call granularity is correct here
-// only because this package owns no NTT-domain state — see doc.go.
-var (
-	deviceMu     = make(map[int32]*sync.Mutex)
-	deviceMuLock sync.Mutex
-)
 
 var (
 	msmChunkCapOnce sync.Once
@@ -51,16 +43,18 @@ func init() {
 	_, isDebugMode = os.LookupEnv("ICICLE_DEBUG")
 }
 
-// getDeviceMutex returns the per-device exclusive mutex for GPU operations.
-// It also makes the non-atomic free-VRAM reads of the MSM tuner safe.
-// lifted from groth16/bls12-377/icicle.go (getDeviceProveMutex)
+// getDeviceMutex returns the process-wide per-device exclusive mutex for GPU
+// operations, shared by ALL plonk curve packages (internal/devicemutex) —
+// NOT per-curve-package state: concurrent plonk Proves of different curves
+// on one device (e.g. recursive aggregation) serialize per GPU operation
+// (SRS upload, every MSM; DESIGN.md §8). It also makes the non-atomic
+// free-VRAM reads of the MSM tuner safe. Per-call granularity is correct
+// here only because this package owns no NTT-domain state — see doc.go. The
+// groth16 backend keeps its own mutexes: groth16∥plonk on one device remains
+// unsupported (doc.go point 2).
+// lifted from groth16/bls12-377/icicle.go (getDeviceProveMutex), then hoisted
 func getDeviceMutex(deviceID int32) *sync.Mutex {
-	deviceMuLock.Lock()
-	defer deviceMuLock.Unlock()
-	if _, exists := deviceMu[deviceID]; !exists {
-		deviceMu[deviceID] = &sync.Mutex{}
-	}
-	return deviceMu[deviceID]
+	return devicemutex.Get(deviceID)
 }
 
 // lifted from groth16/bls12-377/icicle.go (projectiveToGnarkAffine, g1ProjectiveToG1Jac)
