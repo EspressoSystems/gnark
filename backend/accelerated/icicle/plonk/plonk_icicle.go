@@ -34,9 +34,9 @@ func Prove(ccs constraint.ConstraintSystem, pk plonk.ProvingKey, fullWitness wit
 		return nil, fmt.Errorf("initializing config: %w", err)
 	}
 	gpuinit.WarmUpOnce(config)
-	switch ccs.(type) {
+	switch tccs := ccs.(type) {
 	case *cs_bn254.SparseR1CS:
-		panic("bn254 icicle plonk prover not yet wired — Phase 3 (P3.5)")
+		return icicle_bn254.Prove(tccs, pk.(*icicle_bn254.ProvingKey), fullWitness, config)
 	case *cs_bls12377.SparseR1CS:
 		panic("not yet implemented — Phase 4")
 	case *cs_bls12381.SparseR1CS:
