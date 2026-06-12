@@ -7,14 +7,18 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"math/big"
+	"os"
 	"sync"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	kzg_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/kzg"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/accelerated/icicle"
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
+	"github.com/consensys/gnark/backend/witness"
 	cs "github.com/consensys/gnark/constraint/bn254"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -189,4 +193,227 @@ func TestProveUnseededVerifies(t *testing.T) {
 	if err := plonk_bn254.Verify(proof, vk, pw.Vector().(fr.Vector)); err != nil {
 		t.Fatalf("native verify rejected the icicle proof: %v", err)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// P3.7 gates: the GPU-vs-forced-CPU determinism oracle and the circuit matrix
+// (DESIGN.md §11.4/§11.5). Circuits are kept small enough for fast GPU runs
+// but — except for the tiny one — large enough that the prover's MSMs clear
+// the gpuMsmFloor (64) and actually execute on the device.
+// ----------------------------------------------------------------------------
+
+// midSizeCircuit is a chain of squarings: ~2 constraints per round, so
+// n = domain0 cardinality is a few hundred — every §2 MSM row (windows
+// [0:offset], [nbPublic:offset], n, n+2, n+3) is above the GPU floor.
+type midSizeCircuit struct {
+	X frontend.Variable
+	Y frontend.Variable `gnark:",public"`
+}
+
+const midSizeRounds = 200
+
+func (c *midSizeCircuit) Define(api frontend.API) error {
+	acc := c.X
+	for i := 0; i < midSizeRounds; i++ {
+		acc = api.Mul(acc, acc)
+		acc = api.Add(acc, i)
+	}
+	api.AssertIsEqual(acc, c.Y)
+	return nil
+}
+
+func midSizeAssignment() *midSizeCircuit {
+	var acc, tmp fr.Element
+	acc.SetUint64(3)
+	for i := 0; i < midSizeRounds; i++ {
+		acc.Square(&acc)
+		tmp.SetUint64(uint64(i))
+		acc.Add(&acc, &tmp)
+	}
+	return &midSizeCircuit{X: 3, Y: acc.BigInt(new(big.Int))}
+}
+
+// bsb22Circuit uses the PLONK BSB22 commitment API (frontend.Committer), so
+// c ≥ 1 and the §2 row-4 MSM fires INSIDE spr.Solve via the overridden hint.
+// The squaring chain pads n above the GPU floor so the size-n commitment MSM
+// really runs on the device.
+type bsb22Circuit struct {
+	Public frontend.Variable `gnark:",public"`
+	X      frontend.Variable
+}
+
+func (c *bsb22Circuit) Define(api frontend.API) error {
+	acc := c.X
+	for i := 0; i < 100; i++ {
+		acc = api.Mul(acc, acc)
+		acc = api.Add(acc, i)
+	}
+	cmt, err := api.(frontend.Committer).Commit(c.X, acc)
+	if err != nil {
+		return err
+	}
+	api.AssertIsDifferent(cmt, c.Public)
+	return nil
+}
+
+// tinyCircuit has a single constraint: n is far below the gpuMsmFloor, so
+// every MSM takes the CPU leg — gates the floor/degenerate-geometry path
+// (no DeviceSlice.Range call may fire).
+type tinyCircuit struct {
+	X frontend.Variable
+	Y frontend.Variable `gnark:",public"`
+}
+
+func (c *tinyCircuit) Define(api frontend.API) error {
+	api.AssertIsEqual(api.Mul(c.X, c.X), c.Y)
+	return nil
+}
+
+// compileSetup compiles the circuit and runs the icicle Setup over a fresh
+// unsafe KZG SRS.
+func compileSetup(t *testing.T, circuit frontend.Circuit) (*cs.SparseR1CS, *ProvingKey, *plonk_bn254.VerifyingKey) {
+	t.Helper()
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, circuit)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	spr := ccs.(*cs.SparseR1CS)
+	srs, srsLagrange, err := unsafekzg.NewSRS(ccs)
+	if err != nil {
+		t.Fatalf("srs: %v", err)
+	}
+	pk, vk, err := Setup(spr, *srs.(*kzg_bn254.SRS), *srsLagrange.(*kzg_bn254.SRS))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	return spr, pk, vk
+}
+
+func witnessFor(t *testing.T, assignment frontend.Circuit) (witness.Witness, fr.Vector) {
+	t.Helper()
+	w, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatalf("witness: %v", err)
+	}
+	pw, err := w.Public()
+	if err != nil {
+		t.Fatalf("public witness: %v", err)
+	}
+	return w, pw.Vector().(fr.Vector)
+}
+
+// proveVerifySerialize runs one icicle Prove, checks it against the
+// unmodified native verifier (the hard correctness gate) and returns the
+// serialized proof bytes.
+func proveVerifySerialize(t *testing.T, spr *cs.SparseR1CS, pk *ProvingKey, vk *plonk_bn254.VerifyingKey, w witness.Witness, pubW fr.Vector, cfg *icicle.Config) []byte {
+	t.Helper()
+	proof, err := Prove(spr, pk, w, cfg)
+	if err != nil {
+		t.Fatalf("prove: %v", err)
+	}
+	if err := plonk_bn254.Verify(proof, vk, pubW); err != nil {
+		t.Fatalf("native verify rejected the icicle proof: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := proof.WriteTo(&buf); err != nil {
+		t.Fatalf("proof serialization: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// withEnv sets an environment variable for the duration of fn and restores
+// the previous state afterwards. The GPU test suite is sequential (-p 1,
+// doc.go), so toggling the gpuMsm env switches per test is safe.
+func withEnv(t *testing.T, key, val string, fn func()) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	if err := os.Setenv(key, val); err != nil {
+		t.Fatalf("setenv %s: %v", key, err)
+	}
+	defer func() {
+		if had {
+			os.Setenv(key, old)
+		} else {
+			os.Unsetenv(key)
+		}
+	}()
+	fn()
+}
+
+// runSeededGPUvsForcedCPU is THE determinism oracle (DESIGN.md §10.2): with
+// the randFr seam seeded, a default (GPU) Prove and an
+// ICICLE_PLONK_FORCE_CPU_MSM=1 Prove on identical inputs must produce
+// byte-identical proofs — every Fiat-Shamir challenge and all CPU stages
+// match end-to-end, proving the GPU MSMs bit-exact. Both proofs must also
+// pass the unmodified native verifier.
+func runSeededGPUvsForcedCPU(t *testing.T, circuit, assignment frontend.Circuit, seed string, opts ...icicle.Option) {
+	spr, pk, vk := compileSetup(t, circuit)
+	w, pubW := witnessFor(t, assignment)
+	cfg, err := icicle.NewConfig(opts...)
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	restore := SetRandFr(deterministicRandFr([]byte(seed)))
+	defer restore()
+
+	gpuProof := proveVerifySerialize(t, spr, pk, vk, w, pubW, cfg)
+
+	var cpuProof []byte
+	withEnv(t, "ICICLE_PLONK_FORCE_CPU_MSM", "1", func() {
+		cpuProof = proveVerifySerialize(t, spr, pk, vk, w, pubW, cfg)
+	})
+
+	if !bytes.Equal(gpuProof, cpuProof) {
+		t.Fatal("GPU and forced-CPU proofs differ byte-wise under seeded randomness — a GPU MSM is not bit-exact")
+	}
+}
+
+// TestProveGPUvsForcedCPUMultiPublic: §11.5 matrix (a) — two public inputs,
+// so rows 2/3 use the interior window [nbPublic:offset] with nbPublic = 2 and
+// the correctionPoint identity is exercised.
+func TestProveGPUvsForcedCPUMultiPublic(t *testing.T) {
+	runSeededGPUvsForcedCPU(t, &proveTestCircuit{}, &proveTestCircuit{A: 3, B: 5, Res: 15}, "p3.7-multi-public")
+}
+
+// TestProveGPUvsForcedCPUMidSize: the determinism oracle on a circuit whose
+// MSMs all clear the GPU floor — the strongest §11.4 gate.
+func TestProveGPUvsForcedCPUMidSize(t *testing.T) {
+	runSeededGPUvsForcedCPU(t, &midSizeCircuit{}, midSizeAssignment(), "p3.7-mid-size")
+}
+
+// TestProveGPUvsForcedCPUBSB22: §11.5 matrix (b) — c ≥ 1: the row-4 MSM runs
+// inside the solver hint (ordering invariant §5) and the bsb22 randomness
+// tags are exercised.
+func TestProveGPUvsForcedCPUBSB22(t *testing.T) {
+	runSeededGPUvsForcedCPU(t, &bsb22Circuit{}, &bsb22Circuit{Public: 1, X: 3}, "p3.7-bsb22")
+}
+
+// TestProveGPUvsForcedCPUStatisticalZK: §11.5 matrix (c) — h shards are
+// n+3/n+3/n+2: exercises the len-derived windows and the qsr randomness seam.
+func TestProveGPUvsForcedCPUStatisticalZK(t *testing.T) {
+	runSeededGPUvsForcedCPU(t, &midSizeCircuit{}, midSizeAssignment(), "p3.7-statistical-zk",
+		icicle.WithProverOptions(backend.WithStatisticalZeroKnowledge()))
+}
+
+// TestProveGPUvsForcedCPUTiny: §11.5 matrix (d) — n below the gpuMsmFloor:
+// every MSM takes the pure CPU leg; the two runs must still agree (and not
+// panic in any Range call).
+func TestProveGPUvsForcedCPUTiny(t *testing.T) {
+	runSeededGPUvsForcedCPU(t, &tinyCircuit{}, &tinyCircuit{X: 3, Y: 9}, "p3.7-tiny")
+}
+
+// TestProveShadowCompareMidSize: §11.5 matrix (e) — ICICLE_PLONK_DEBUG_MSM=1
+// shadow-compares every gpuMsm against curve MultiExp on identical inputs and
+// errors on the first mismatch; the prove must complete with zero mismatches.
+func TestProveShadowCompareMidSize(t *testing.T) {
+	spr, pk, vk := compileSetup(t, &midSizeCircuit{})
+	w, pubW := witnessFor(t, midSizeAssignment())
+	cfg, err := icicle.NewConfig()
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	withEnv(t, "ICICLE_PLONK_DEBUG_MSM", "1", func() {
+		proveVerifySerialize(t, spr, pk, vk, w, pubW, cfg)
+	})
 }
