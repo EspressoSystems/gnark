@@ -1,6 +1,6 @@
 # GPU support for Plonk (ICICLE) — experiment plan
 
-Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 5 in progress (Phases 0–4 done; all 4 curves prove on GPU)**
+Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 6 in progress — benchmark matrix running (Phases 0–5 done)**
 
 ## Goal
 
@@ -148,3 +148,14 @@ post-design checkpoint.
   projection at 2^16; to be measured properly by the full matrix under exclusive
   GPU access (commands + ~1.5-3 h runtime and ~4.2 GiB SRS-cache disk estimates
   in the bench_test.go header, incl. an ICICLE_STEP_PROFILE per-MSM pass).
+- 2026-06-11: **Phase 5 done.** (a) Full untagged `go test -short ./...` regression:
+  exit 0, zero failures — upstream gnark untouched. (b) Adversarial review of the
+  refcounted lifetime model (22 agents, 2 lenses + 2-skeptic verification):
+  3 confirmed findings fixed in d88aa264 — TOCTOU in ReadFrom/UnsafeReadFrom
+  (setupMu now held across the entire deserialization; -race stress test added),
+  unjoined gpuinit warm-up transient (warm-up goroutines now joined, streams
+  synchronized+destroyed, VRAM precheck re-samples before erroring), and the
+  per-curve per-device mutex hoisted into shared internal/devicemutex so
+  cross-curve plonk Proves on one GPU serialize correctly (doc contract updated
+  in all 4 packages). All gates re-green incl. -race on all four curve packages.
+  Phase 6 benchmark matrix launched (8 timing runs + 4 step-profile passes).
