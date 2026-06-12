@@ -1,0 +1,49 @@
+23:39:55 INF compiling circuit
+23:39:55 INF parsed circuit inputs nbPublic=1 nbSecret=1
+23:39:57 INF building constraint builder nbConstraints=4194297
+23:39:57 WRN using kzg srs cache cacheDir=/home/work/.gnark/kzg
+23:39:57 DBG fetching SRS from mem cache curve=bn254 key=kzgsrs-bn254-4194307 package=kzgsrs size=4194307
+23:39:57 DBG SRS not found in mem cache curve=bn254 package=kzgsrs size=4194307
+23:39:57 DBG fetching SRS from fs cache cacheDir=/home/work/.gnark/kzg curve=bn254 key=kzgsrs-bn254-4194307 package=kzgsrs size=4194307
+23:39:58 DBG SRS found in fs cache curve=bn254 key=kzgsrs-bn254-4194307 package=kzgsrs size=4194307
+[INFO] ICICLE backend loaded from $ICICLE_BACKEND_INSTALL_DIR=/nix/store/dprr5jx71aspai9kxsx1dra0a09m28v5-icicle-gnark-3.2.2/lib/backend
+23:40:05 DBG ICICLE devices detected nbDev=1
+23:40:05 DBG ICICLE device created id=0 type=CUDA
+23:40:06 DBG constraint system solver done nbConstraints=4194297 took=171.918551
+23:40:07 DBG PLONK GPU MSM chunks=16 size=4194297 took=288.796512
+23:40:07 DBG PLONK GPU MSM chunks=16 size=4194297 took=586.394232
+23:40:07 DBG PLONK GPU MSM chunks=16 size=4194298 took=885.757598
+23:40:08 DBG PLONK GPU MSM chunks=16 size=4194304 took=367.652281
+23:40:27 DBG PLONK GPU MSM chunks=17 size=4194306 took=427.459089
+23:40:28 DBG PLONK GPU MSM chunks=17 size=4194306 took=830.153479
+23:40:28 DBG PLONK GPU MSM chunks=17 size=4194306 took=1228.627078
+23:40:29 DBG PLONK GPU MSM chunks=17 size=4194306 took=386.362912
+23:40:29 DBG PLONK GPU MSM chunks=17 size=4194307 took=390.752835
+23:40:30 DBG PLONK GPU MSM chunks=17 size=4194306 took=392.079682
+23:40:30 DBG prover done acceleration=icicle backend=plonk curve=bn254 nbConstraints=4194297 took=24922.621198
+23:40:30 DBG verifier done backend=plonk curve=bn254 took=3.744187
+23:40:32 DBG constraint system solver done nbConstraints=4194297 took=371.789902
+23:40:32 DBG PLONK GPU MSM chunks=16 size=4194298 took=289.689332
+23:40:32 DBG PLONK GPU MSM chunks=16 size=4194297 took=590.361929
+23:40:32 DBG PLONK GPU MSM chunks=16 size=4194297 took=885.067351
+23:40:33 DBG PLONK GPU MSM chunks=16 size=4194304 took=368.628421
+23:40:53 DBG PLONK GPU MSM chunks=17 size=4194306 took=432.552671
+23:40:53 DBG PLONK GPU MSM chunks=17 size=4194306 took=835.887788
+23:40:53 DBG PLONK GPU MSM chunks=17 size=4194306 took=1240.523349
+23:40:54 DBG PLONK GPU MSM chunks=17 size=4194306 took=394.232072
+23:40:55 DBG PLONK GPU MSM chunks=17 size=4194307 took=397.189343
+23:40:56 DBG PLONK GPU MSM chunks=17 size=4194306 took=387.387651
+23:40:56 DBG prover done acceleration=icicle backend=plonk curve=bn254 nbConstraints=4194297 took=25653.317851
+23:40:56 DBG Freed device Kzg G1
+23:40:56 DBG Freed device KzgLagrange G1
+goos: linux
+goarch: amd64
+pkg: github.com/consensys/gnark/backend/accelerated/icicle/plonk
+cpu: 11th Gen Intel(R) Core(TM) i7-11800H @ 2.30GHz
+BenchmarkPlonkProveGPU/bn254/2^22-16         	       1	25653409470 ns/op
+--- BENCH: BenchmarkPlonkProveGPU/bn254/2^22-16
+    bench_test.go:176: [setup] bn254 2^22: compiling 4194296-constraint chain
+    bench_test.go:183: [setup] bn254 2^22: SRS (unsafekzg, FS cache ~/.gnark/kzg)
+    bench_test.go:189: [setup] bn254 2^22: plonk.Setup
+PASS
+ok  	github.com/consensys/gnark/backend/accelerated/icicle/plonk	61.400s
