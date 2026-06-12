@@ -4,7 +4,7 @@
 // Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
 // CLONE of the native BN254 PLONK prover for the ICICLE backend (DESIGN.md
-// §12 P3.5).
+// §12 P3.5/P3.6).
 //
 // Provenance: backend/plonk/bn254/prove.go at gnark commit
 // c74a2dc8b890c3d7d196bf20d857a1e482ac57f7 (branch philippe/gpu-experiment),
@@ -18,9 +18,12 @@
 //
 //	diff -u backend/plonk/bn254/prove.go backend/accelerated/icicle/plonk/bn254/prove.go
 //
-// At this step (P3.5) NO MSM runs on the GPU: every kzg.Commit / MultiExp /
-// kzg.Open / kzg.BatchOpenSinglePoint call site below is still the native CPU
-// call. P3.6 swaps them through the gpuMsm chokepoint per DESIGN.md §2.
+// As of P3.6 the 10+c large MSM call sites (DESIGN.md §2 rows 1-11) are
+// routed through the gpuMsm chokepoint (gpuMsm / gpuCommit / gpuOpen /
+// gpuBatchOpenSinglePoint) against the device-resident dual SRS; every window
+// length is derived from len(slice), never hard-coded. commitBlindingFactor,
+// the correctionPoint ScalarMultiplication and all FFT/closure code stay on
+// the CPU (DESIGN.md §3).
 //
 // Upstream-desync liability (DESIGN.md §10.5): changes to the upstream
 // prove.go on master silently desync this clone; the commit hash above is the
@@ -66,6 +69,7 @@ import (
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/logger"
 
+	icicle_core "github.com/ingonyama-zk/icicle-gnark/v3/wrappers/golang/core"
 	icicle_runtime "github.com/ingonyama-zk/icicle-gnark/v3/wrappers/golang/runtime"
 )
 
@@ -247,7 +251,7 @@ type instance struct {
 	opt   *backend.ProverConfig
 
 	// [icicle] GPU device handle the per-Prove device work runs on; consumed
-	// by the MSM call sites when P3.6 swaps them through gpuMsm.
+	// by the MSM call sites routed through gpuMsm (P3.6).
 	device icicle_runtime.Device
 
 	fs             *fiatshamir.Transcript
@@ -410,7 +414,11 @@ func (s *instance) bsb22Hint(_ *big.Int, ins, outs []*big.Int) error {
 		return err
 	}
 	s.cCommitments[commDepth] = iop.NewPolynomial(&committedValues, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
-	if s.proof.Bsb22Commitments[commDepth], err = kzg.Commit(s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange); err != nil {
+	// [icicle] DESIGN.md §2 row 4: BSB22 commitment routed through gpuCommit
+	// against the Lagrange pair. This runs INSIDE spr.Solve — the device SRS
+	// is resident before the solver starts (§5 ordering invariant) and gpuMsm
+	// takes the per-device mutex per call.
+	if s.proof.Bsb22Commitments[commDepth], err = gpuCommit(&s.device, s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange.G1, s.pk.G1Device.KzgLagrange); err != nil {
 		return err
 	}
 
@@ -552,7 +560,9 @@ func (s *instance) commitToLRO() error {
 			coeffs[i].Sub(&coeffs[i], &s0)
 		}
 		var commit curve.G1Affine
-		if _, err = commit.MultiExp(s.pk.KzgLagrange.G1[:offset], coeffs[:offset], ecc.MultiExpConfig{}); err != nil {
+		// [icicle] DESIGN.md §2 row 1: MSM over the window [0:offset] of the
+		// Lagrange SRS routed through the gpuMsm chokepoint.
+		if commit, err = gpuMsm(&s.device, coeffs[:offset], s.pk.KzgLagrange.G1, s.pk.G1Device.KzgLagrange, 0); err != nil {
 			return
 		}
 		for i := 0; i < offset; i++ {
@@ -571,7 +581,9 @@ func (s *instance) commitToLRO() error {
 			coeffs[i].Sub(&coeffs[i], &s0)
 		}
 		var commit curve.G1Affine
-		if _, err = commit.MultiExp(s.pk.KzgLagrange.G1[nbPublic:offset], coeffs[nbPublic:offset], ecc.MultiExpConfig{}); err != nil {
+		// [icicle] DESIGN.md §2 rows 2/3: MSM over the interior window
+		// [nbPublic:offset] of the Lagrange SRS routed through gpuMsm.
+		if commit, err = gpuMsm(&s.device, coeffs[nbPublic:offset], s.pk.KzgLagrange.G1, s.pk.G1Device.KzgLagrange, nbPublic); err != nil {
 			return
 		}
 		for i := nbPublic; i < offset; i++ {
@@ -590,7 +602,9 @@ func (s *instance) commitToLRO() error {
 			coeffs[i].Sub(&coeffs[i], &s0)
 		}
 		var commit curve.G1Affine
-		if _, err = commit.MultiExp(s.pk.KzgLagrange.G1[nbPublic:offset], coeffs[nbPublic:offset], ecc.MultiExpConfig{}); err != nil {
+		// [icicle] DESIGN.md §2 rows 2/3: MSM over the interior window
+		// [nbPublic:offset] of the Lagrange SRS routed through gpuMsm.
+		if commit, err = gpuMsm(&s.device, coeffs[nbPublic:offset], s.pk.KzgLagrange.G1, s.pk.G1Device.KzgLagrange, nbPublic); err != nil {
 			return
 		}
 		for i := nbPublic; i < offset; i++ {
@@ -649,7 +663,9 @@ func (s *instance) deriveGammaAndBeta() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 
-	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+	// [icicle] DESIGN.md §2 row 5: grand-product commitment routed through
+	// gpuCommit against the Lagrange pair; the blinding commit below stays CPU.
+	commit, err = gpuCommit(&s.device, p.Coefficients(), s.pk.KzgLagrange.G1, s.pk.G1Device.KzgLagrange)
 
 	// we add in the blinding contribution
 	n := int(s.domain0.Cardinality)
@@ -735,7 +751,9 @@ func (s *instance) computeQuotient() (err error) {
 	checkpoint("h", s.h.Coefficients())
 
 	// commit to h
-	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
+	// [icicle] DESIGN.md §2 rows 6-8: the canonical (host, device) SRS pair is
+	// passed so the three shard commitments route through gpuCommit.
+	if err := commitToQuotient(&s.device, s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg, s.pk.G1Device.Kzg); err != nil {
 		return err
 	}
 
@@ -803,7 +821,10 @@ func (s *instance) openZ() (err error) {
 	zetaShifted.Mul(&s.zeta, &s.pk.Vk.Generator)
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
-	s.proof.ZShiftedOpening, err = kzg.Open(s.blindedZ, zetaShifted, s.pk.Kzg)
+	// [icicle] DESIGN.md §2 row 9: the opening's quotient commitment routes
+	// through gpuOpen against the canonical pair (Horner eval + synthetic
+	// division stay CPU).
+	s.proof.ZShiftedOpening, err = gpuOpen(&s.device, s.blindedZ, zetaShifted, s.pk.Kzg.G1, s.pk.G1Device.Kzg)
 	if err != nil {
 		return err
 	}
@@ -912,7 +933,10 @@ func (s *instance) computeLinearizedPolynomial() error {
 	checkpoint("linearized-poly", s.linearizedPolynomial)
 
 	var err error
-	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	// [icicle] DESIGN.md §2 row 10: linearized-polynomial commitment routed
+	// through gpuCommit against the canonical pair (the nbTasks hint is
+	// accepted and ignored — it cannot change the MSM result).
+	s.linearizedPolynomialDigest, err = gpuCommit(&s.device, s.linearizedPolynomial, s.pk.Kzg.G1, s.pk.G1Device.Kzg, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
@@ -951,12 +975,17 @@ func (s *instance) batchOpening() error {
 	digestsToOpen[5] = s.pk.Vk.S[1]
 
 	var err error
-	s.proof.BatchedProof, err = kzg.BatchOpenSinglePoint(
+	// [icicle] DESIGN.md §2 row 11: the folded-quotient commitment routes
+	// through gpuBatchOpenSinglePoint against the canonical pair; transcript,
+	// fold order and dataTranscript bytes replicate upstream exactly.
+	s.proof.BatchedProof, err = gpuBatchOpenSinglePoint(
+		&s.device,
 		polysToOpen,
 		digestsToOpen,
 		s.zeta,
 		s.kzgFoldingHash,
-		s.pk.Kzg,
+		s.pk.Kzg.G1,
+		s.pk.G1Device.Kzg,
 		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
 	)
 	if err != nil {
@@ -1396,21 +1425,26 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 	return res
 }
 
-func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
+// [icicle] DESIGN.md §2 rows 6-8: the three quotient-shard commitments route
+// through gpuCommit against the CANONICAL pair (kzgPk.G1, devKzg). The shard
+// sizes are len-derived (n+2, or n+3/n+3/n+2 under StatisticalZK — h1()/h2()/
+// h3() decide); the canonical device base has exactly n+3 points, so the n+3
+// windows fit by construction.
+func commitToQuotient(device *icicle_runtime.Device, h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey, devKzg icicle_core.DeviceSlice) error {
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
-		proof.H[0], err = kzg.Commit(h1, kzgPk)
+		proof.H[0], err = gpuCommit(device, h1, kzgPk.G1, devKzg)
 		return
 	})
 
 	g.Go(func() (err error) {
-		proof.H[1], err = kzg.Commit(h2, kzgPk)
+		proof.H[1], err = gpuCommit(device, h2, kzgPk.G1, devKzg)
 		return
 	})
 
 	g.Go(func() (err error) {
-		proof.H[2], err = kzg.Commit(h3, kzgPk)
+		proof.H[2], err = gpuCommit(device, h3, kzgPk.G1, devKzg)
 		return
 	})
 
