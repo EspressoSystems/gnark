@@ -89,6 +89,7 @@
       devShells.${system}.default = pkgs.mkShell {
         packages = [
           pkgs.go
+          pkgs.just
           icicle-gnark
         ];
 
