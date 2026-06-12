@@ -1,0 +1,13 @@
+goos: linux
+goarch: amd64
+pkg: github.com/consensys/gnark/backend/accelerated/icicle/plonk
+cpu: 11th Gen Intel(R) Core(TM) i7-11800H @ 2.30GHz
+BenchmarkPlonkProveCPU/bw6_761/2^21-16         	       2	64866705245 ns/op
+--- BENCH: BenchmarkPlonkProveCPU/bw6_761/2^21-16
+    bench_test.go:176: [setup] bw6_761 2^21: compiling 2097144-constraint chain
+    bench_test.go:183: [setup] bw6_761 2^21: SRS (unsafekzg, FS cache ~/.gnark/kzg)
+    bench_test.go:189: [setup] bw6_761 2^21: plonk.Setup
+[INFO] ICICLE backend loaded from $ICICLE_BACKEND_INSTALL_DIR=/nix/store/dprr5jx71aspai9kxsx1dra0a09m28v5-icicle-gnark-3.2.2/lib/backend
+BenchmarkPlonkProveGPU/bw6_761/2^21-16         	       2	42572510100 ns/op
+PASS
+ok  	github.com/consensys/gnark/backend/accelerated/icicle/plonk	721.941s

@@ -1,6 +1,6 @@
 # GPU support for Plonk (ICICLE) — experiment plan
 
-Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 6 in progress — benchmark matrix running (Phases 0–5 done)**
+Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **COMPLETE — all 6 phases done; results below**
 
 ## Goal
 
@@ -73,6 +73,45 @@ Phases run as sequential multi-agent workflows with the orchestrator reading eac
 result before shaping the next. Durable state: commits on this branch, this file
 (status line + progress log below), and `DESIGN.md`. The only planned interruption is the
 post-design checkpoint.
+
+## Results (Phase 6, 2026-06-11)
+
+Pinned steady-state GPU prove (dual SRS resident, warm backend) vs the real upstream CPU
+prover, RTX 3070 8 GB / i7-11800H 16T, scaled referenceCircuit, both legs verified by the
+unmodified `plonk.Verify`. Raw outputs in `bench-results/`.
+
+| n | bn254 CPU→GPU | bls12-377 | bls12-381 | bw6-761 |
+|---|---|---|---|---|
+| 2^16 | 0.55 → 0.55 s (**1.00×**) | 0.82 → 0.69 s (**1.18×**) | 0.83 → 0.76 s (**1.09×**) | 3.36 → 2.17 s (**1.55×**) |
+| 2^18 | 1.78 → 1.53 s (**1.17×**) | 2.54 → 1.82 s (**1.39×**) | 2.63 → 1.87 s (**1.41×**) | 9.47 → 5.09 s (**1.86×**) |
+| 2^20 | 7.59 → 6.08 s (**1.25×**) | 9.86 → 7.10 s (**1.39×**) | 9.86 → 7.15 s (**1.38×**) | 32.78 → 21.43 s (**1.53×**) |
+| 2^22 | 32.50 → 26.33 s (**1.23×**) | 39.25 → 29.55 s (**1.33×**) | 39.10 → 30.28 s (**1.29×**) | 2^21: 64.87 → 42.57 s (**1.52×**) |
+
+**Where the time goes** (per-MSM step profile, largest size per curve, timed prove):
+each of the 10 large MSMs runs as 16–17 sequential chunks (the 2^18 chunk cap inherited
+from groth16): bn254 ~290–430 ms/MSM (~3.9 s device-busy/proof), bls12-377 ~650–690 ms,
+bls12-381 ~720–860 ms, bw6-761@2^21 ~2.0–2.3 s. The log shows the concurrent commit
+trios (L/R/O and H1/H2/H3) queueing on the per-device mutex — their wall times stack
+(e.g. bn254 H shards 433/836/1240 ms) but CPU pipeline work overlaps the queue.
+
+**Verdict vs DESIGN.md §14**: measured speedups land below the projection
+(bn254: 1.23× at 2^22 vs projected ~1.45–1.5×; ~1.0× at 2^16 vs projected ~2×) for one
+dominant, now-measured reason: per-MSM GPU cost is ~2× the design's ≤200 ms assumption.
+The gap is concentrated in (a) the 16–17× chunking at 2^18 cap — per-chunk launch/sync
+plus a CPU projective→affine (field inversion) per chunk; (b) per-call on-device
+Montgomery conversion of the full scalar vector (`AreScalarsMontgomeryForm=true`);
+(c) device-mutex serialization of concurrent commit trios. The speedup grows with field
+size exactly as the GPU should: **bw6-761 (384-bit fr) gets 1.5–1.86×** — CPU field muls
+scale quadratically with limb count, GPU eats it. The FFT machinery (30–48% of CPU time)
+stays on CPU by design — that is the Appendix-A Increment-2 decision, which these numbers
+now inform.
+
+**Tuning candidates before Increment 2** (cheap, in expected-gain order): raise the MSM
+chunk cap for G1-only MSMs (the 2^18 value guards a bls12-377 **G2** backend crash that
+Plonk cannot hit — 4 chunks instead of 17 removes ~75% of chunk overhead); pre-convert
+pinned SRS scalars... (n/a — scalars are per-proof; instead convert scalars on host or
+keep device-standard form to skip the per-call conversion); overlap commit trios with
+per-MSM streams instead of the exclusive device mutex.
 
 ## Progress log
 
@@ -159,3 +198,11 @@ post-design checkpoint.
   cross-curve plonk Proves on one GPU serialize correctly (doc contract updated
   in all 4 packages). All gates re-green incl. -race on all four curve packages.
   Phase 6 benchmark matrix launched (8 timing runs + 4 step-profile passes).
+- 2026-06-11: **Phase 6 done — experiment complete.** Full matrix measured (table in
+  Results above): 1.0–1.25× bn254, 1.1–1.4× bls12 curves, 1.5–1.86× bw6-761. Per-MSM
+  step profile explains the gap vs the §14 projection: ~390 ms per 2^22 bn254 MSM
+  (vs ≤200 ms assumed), dominated by 17× chunking at the inherited 2^18 cap plus
+  per-call Montgomery conversion. All success criteria met: GPU proofs verify with the
+  unmodified CPU verifier on all 4 curves; CPU-only builds and the upstream test suite
+  are untouched (full untagged suite green); benchmark report with MSM decomposition
+  delivered; everything committed incrementally on this branch.
