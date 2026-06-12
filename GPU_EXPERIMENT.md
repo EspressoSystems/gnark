@@ -1,6 +1,6 @@
 # GPU support for Plonk (ICICLE) — experiment plan
 
-Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **CHECKPOINT — DESIGN.md awaiting user sign-off (Phases 0–2 done)**
+Branch: `philippe/gpu-experiment` · Started: 2026-06-11 · Status: **Phase 5 in progress (Phases 0–4 done; all 4 curves prove on GPU)**
 
 ## Goal
 
@@ -111,3 +111,24 @@ post-design checkpoint.
   all-CPU clone-fidelity gate before any GPU wiring. Honest projection: ~1.9–2.1×
   at 2^16 shrinking to ~1.45–1.5× at 2^22 (FFT stays on CPU; Amdahl ceiling 1.62×).
   Awaiting user sign-off before Phase 3 (bn254 implementation).
+- 2026-06-11: Design accepted by user. **Phase 3 (bn254) done** — commits 70c70571
+  (P3.0 gpuinit hoist), 53b87306 (P3.1 skeleton), fd76cf98 (P3.2 gpuMsm + 22-case
+  GPU parity matrix), 50aff4fe (P3.3 ProvingKey wrapper + device dual SRS),
+  c74a2dc8 (P3.4 kzg clones, byte-parity), e3ccdbb2 (P3.5 prove.go clone, 22
+  sanctioned hunks, deterministic-randomness seam, clone-fidelity gate),
+  59f7cc7b/1a00c198 (P3.6/P3.7 the 10+c MSM swap + gates: seeded GPU-vs-forced-CPU
+  proofs BYTE-IDENTICAL across the circuit matrix incl. BSB22-in-solver,
+  StatisticalZK, tiny-circuit floor; race clean). P3.8 adversarial review (45
+  agents, 3 lenses, 2-skeptic verification): 12 confirmed findings → fixed in
+  51959d67 — notably a real CRITICAL (deferred FreeGPUResources freeing the device
+  SRS under concurrent Proves on a shared pk) now solved with a refcounted
+  device-SRS lifetime model + race-tested concurrent-Prove gates; plus device-
+  identity check, ReadFrom device-state invalidation, VRAM-OOM as errors,
+  chunked-MSM parity coverage. 2eaf9553 fixed the dev-shell libstdc++ leak.
+- 2026-06-11: **Phase 4 done** — ports: bls12-377 (5a0a3a49), bls12-381 (9fb97188),
+  bw6-761 (e054047a). Each: 9-step ordered identifier substitution, zero
+  non-identifier differences needed (all MSM machinery derives sizes from
+  unsafe.Sizeof/fr.Bits/fr.Limbs — confirmed even for bw6-761's 48B scalars/192B
+  points), clone-fidelity gate exactly 25 hunks per curve, cross-package
+  diff-of-diffs empty, full per-curve gate suites green incl. determinism oracles
+  and -race. 4-curve marshal loop + mixed groth16→plonk→groth16 smoke green.

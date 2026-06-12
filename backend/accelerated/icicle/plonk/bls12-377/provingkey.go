@@ -58,7 +58,7 @@ type deviceInfo struct {
 // device-resident SRS before the host SRS is replaced.
 type ProvingKey struct {
 	plonk_bls12377.ProvingKey
-	*deviceInfo // nil until first use
+	*deviceInfo            // nil until first use
 	setupMu     sync.Mutex // Protects deviceInfo and its refs/pinned/pendingFree state
 	// PinToGPU keeps the SRS vectors in GPU memory across Prove calls
 	// (default: false). Set it BEFORE the first Prove on this key and do not
